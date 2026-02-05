@@ -4,8 +4,20 @@ import io
 from typing import Type
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
+import os
+from firecrawl import FirecrawlApp
 from .config import logger, RELEVANT_KEYWORDS
 from .models import WebScraperInput, ListingAnalyzerInput, ContentFetcherInput
+from dotenv import load_dotenv
+
+load_dotenv()
+FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY")
+
+def get_firecrawl_app():
+    if not FIRECRAWL_API_KEY:
+        logger.warning("FIRECRAWL_API_KEY not found in environment.")
+        return None
+    return FirecrawlApp(api_key=FIRECRAWL_API_KEY)
 
 # PDF Support
 try:
@@ -28,40 +40,147 @@ class WebScraperTool(BaseTool if CREWAI_AVAILABLE else object):
     args_schema: Type = WebScraperInput
     
     def _run(self, url: str) -> str:
-        logger.info(f"WebScraper: Fetching {url}")
-        headers = {'User-Agent': 'Mozilla/5.0'}
+        app = get_firecrawl_app()
+        # Always try traditional scrape first for speed/reliability on simple listing pages
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
         try:
-            response = requests.get(url, headers=headers, timeout=30, verify=False)
-            response.raise_for_status()
-            return response.text
+            logger.info(f"WebScraper: Attempting traditional scrape for {url}")
+            resp = requests.get(url, headers=headers, timeout=20, verify=False)
+            if resp.status_code == 200 and len(resp.text) > 1000:
+                logger.info(f"WebScraper: Traditional scrape successful ({len(resp.text)} bytes).")
+                return resp.text
+            logger.warning(f"Traditional scrape returned code {resp.status_code} and {len(resp.text)} bytes.")
         except Exception as e:
-            logger.error(f"WebScraper Error: {e}")
-            return f"ERROR: {str(e)}"
+            logger.warning(f"Traditional scrape failed for {url}: {e}")
+
+        # Firecrawl fallback
+        if app:
+            try:
+                logger.info(f"WebScraper: Scraping {url} via Firecrawl")
+                scrape_result = app.scrape_url(url, params={'formats': ['html']})
+                html = scrape_result.get('html', "")
+                if html:
+                    logger.info(f"WebScraper: Firecrawl scrape successful ({len(html)} bytes).")
+                    return html
+            except Exception as e:
+                logger.error(f"Firecrawl Scrape Error: {e}")
+                
+        return "ERROR: Scrape failed."
 
 class ListingAnalyzerTool(BaseTool if CREWAI_AVAILABLE else object):
     name: str = "listing_analyzer"
-    description: str = "Scans HTML for links matching relevant keywords."
+    description: str = "Scans HTML for links matching relevant keywords (uses Firecrawl map if available)."
     args_schema: Type = ListingAnalyzerInput
     
     def _run(self, html_content: str, base_url: str) -> str:
-        soup = BeautifulSoup(html_content, 'lxml')
-        relevant_links = []
-        for a_tag in soup.find_all('a', href=True):
-            link_text = a_tag.get_text(strip=True)
-            full_url = urljoin(base_url, a_tag['href'])
-            found_keyword = next((kw for kw in RELEVANT_KEYWORDS if kw.lower() in link_text.lower()), None)
-            
-            if not found_keyword and len(link_text) < 15:
-                parent = a_tag.find_parent('li') or a_tag.find_parent('td')
-                if parent:
-                    parent_text = parent.get_text(strip=True)
-                    found_keyword = next((kw for kw in RELEVANT_KEYWORDS if kw.lower() in parent_text.lower()), None)
-            
-            if found_keyword:
-                relevant_links.append({"title": link_text or "Notice", "url": full_url, "keyword_found": found_keyword})
+        relevant_links = {} # Use dict keyed by URL for uniqueness
+
+        # Function to match flexible keywords
+        def matches_keyword(text: str) -> Optional[str]:
+            if not text: return None
+            text_lower = text.lower()
+            for kw in RELEVANT_KEYWORDS:
+                kw_lower = kw.lower()
+                if kw_lower in text_lower: return kw
+                # Delimiter match (e.g. "Web Notice" matches "Web+Notice" or "Web_Notice")
+                kw_variants = [kw_lower.replace(" ", d) for d in ["+", "_", "-", ""]]
+                for variant in kw_variants:
+                    if variant and variant in text_lower: return kw
+            return None
+
+        # 1. Firecrawl Map (Good for thorough URL discovery)
+        app = get_firecrawl_app()
+        if app:
+            try:
+                logger.info(f"ListingAnalyzer: Mapping links for {base_url}")
+                map_result = app.map_url(base_url)
+                for link in map_result.get('links', []):
+                    found_keyword = matches_keyword(link)
+                    if found_keyword:
+                        relevant_links[link] = {"title": "Notice", "url": link, "keyword_found": found_keyword}
+            except Exception as e:
+                logger.error(f"Firecrawl Map Error: {e}")
+
+        # 2. BeautifulSoup Fallback/Complement (Essential for matching keywords in visible text)
+        if html_content and not html_content.startswith("ERROR"):
+            try:
+                logger.info(f"ListingAnalyzer: Analyzing HTML content ({len(html_content)} bytes)")
+                soup = BeautifulSoup(html_content, 'lxml')
+                all_a = soup.find_all('a', href=True)
+                logger.info(f"ListingAnalyzer: Found {len(all_a)} total links in HTML.")
+                
+                for a_tag in all_a:
+                    link_text = a_tag.get_text(" ", strip=True) # Space separator for nested spans
+                    full_url = urljoin(base_url, a_tag['href'])
+                    
+                    found_keyword = matches_keyword(link_text)
+                    
+                    # Match in parent/sibling text if link text is short (e.g. "View")
+                    if not found_keyword and len(link_text) < 25:
+                        parent = a_tag.find_parent(['td', 'li', 'div', 'tr'])
+                        if parent:
+                            parent_text = parent.get_text(" ", strip=True)
+                            found_keyword = matches_keyword(parent_text)
+                    
+                    if found_keyword:
+                        relevant_links[full_url] = {"title": link_text or "Notice", "url": full_url, "keyword_found": found_keyword}
+            except Exception as e:
+                logger.error(f"BS4 Analyzer Error: {e}")
+
+        if not relevant_links:
+            logger.warning("ListingAnalyzer: No relevant links discovered.")
+            # Debug: log first 10 links if any
+            if 'soup' in locals():
+                sample = [a['href'] for a in soup.find_all('a', href=True)[:10]]
+                logger.info(f"ListingAnalyzer Sample links: {sample}")
+
+        return json.dumps(list(relevant_links.values()))
+
+class FirecrawlExtractorTool(BaseTool if CREWAI_AVAILABLE else object):
+    name: str = "firecrawl_extractor"
+    description: str = "Uses Firecrawl LLM-powered extraction to get structured fields from a URL."
+    
+    def _run(self, url: str) -> dict:
+        app = get_firecrawl_app()
+        if not app: return {}
         
-        unique_links = {link['url']: link for link in relevant_links}.values()
-        return json.dumps(list(unique_links))
+        schema = {
+            'type': 'object',
+            'properties': {
+                'bank': {'type': 'string', 'description': 'Name of the bank or institution'},
+                'borrower_name': {'type': 'string', 'description': 'Name of the primary borrower or company'},
+                'reserve_price': {'type': 'string', 'description': 'The reserve price for the auction (e.g. 175.00 Cr)'},
+                'due_amount': {'type': 'string', 'description': 'Total dues or principal outstanding. Do not capture dates here.'},
+                'auction_date': {'type': 'string', 'description': 'Date of the e-auction'},
+                'accounts': {
+                    'type': 'array',
+                    'items': {
+                        'type': 'object',
+                        'properties': {
+                            'company': {'type': 'string'},
+                            'reserve': {'type': 'string'},
+                            'dues': {'type': 'string'}
+                        }
+                    }
+                }
+            }
+        }
+        
+        try:
+            logger.info(f"FirecrawlExtractor: Extracting structured data from {url}")
+            # Use scrape with extract format for highest accuracy
+            extract_result = app.scrape_url(url, params={
+                'formats': ['extract'],
+                'extract': {'schema': schema}
+            })
+            if 'extract' in extract_result:
+                return extract_result['extract']
+            if 'data' in extract_result and 'extract' in extract_result['data']:
+                return extract_result['data']['extract']
+            return extract_result
+        except Exception as e:
+            logger.error(f"Firecrawl Extract Error: {e}")
+            return {}
 
 class ContentFetcherTool(BaseTool if CREWAI_AVAILABLE else object):
     name: str = "content_fetcher"
@@ -69,13 +188,30 @@ class ContentFetcherTool(BaseTool if CREWAI_AVAILABLE else object):
     args_schema: Type = ContentFetcherInput
     
     def _run(self, url: str) -> str:
+        app = get_firecrawl_app()
+        if not app or url.lower().endswith('.pdf'):
+            # Fallback for PDFs or if firecrawl missing
+            try:
+                response = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=60, verify=False)
+                if url.lower().endswith('.pdf') or 'application/pdf' in response.headers.get('Content-Type', '').lower():
+                    return self._extract_pdf_text(response.content)
+                return self._extract_html_text(response.text)
+            except Exception as e:
+                logger.error(f"Fallback Fetcher Error: {e}")
+                return ""
+        
         try:
-            response = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=60, verify=False)
-            if url.lower().endswith('.pdf') or 'application/pdf' in response.headers.get('Content-Type', '').lower():
-                return self._extract_pdf_text(response.content)
-            return self._extract_html_text(response.text)
+            logger.info(f"ContentFetcher: Scraping markdown via Firecrawl for {url}")
+            # Use 'scrape' method if 'scrape_url' missing, but my test showed 'scrape_url' works
+            scrape_result = app.scrape_url(url, params={'formats': ['markdown']})
+            # Firecrawl v1 returns data in 'data' field or direct?
+            # My test script output will tell, but usually it's scrape_result['data']['markdown'] or similar.
+            # Let's be defensive.
+            if 'data' in scrape_result:
+                return scrape_result['data'].get('markdown', "")
+            return scrape_result.get('markdown', "")
         except Exception as e:
-            logger.error(f"ContentFetcher Error: {e}")
+            logger.error(f"Firecrawl Content Error: {e}")
             return ""
 
     def _extract_pdf_text(self, pdf_bytes: bytes) -> str:

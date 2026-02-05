@@ -7,48 +7,61 @@ from src.pipeline import extract_notices_direct
 from src.config import RELEVANT_KEYWORDS
 
 def save_results(notices: list, url: str) -> str:
-    """Save results to results/ folder."""
+    """Save results to results/ folder with a unique name."""
     results_dir = os.path.join(os.getcwd(), "results")
     os.makedirs(results_dir, exist_ok=True)
     
     domain = urlparse(url).netloc.replace(".", "_")
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filepath = os.path.join(results_dir, f"DEEP_{domain}_{timestamp}.json")
+    filepath = os.path.join(results_dir, f"{domain}_{timestamp}.json")
     
-    data = {
-        "metadata": {
-            "source_url": url,
-            "extraction_time": datetime.now().isoformat(),
-            "keywords": RELEVANT_KEYWORDS,
-            "count": len(notices)
-        },
-        "notices": notices
-    }
+    # notices is a list of NoticeBundle objects
+    serializable_notices = [n.model_dump() for n in notices]
     
     with open(filepath, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
+        json.dump(serializable_notices, f, indent=2, ensure_ascii=False)
     return filepath
 
 def main():
-    default_url = "https://sbi.bank.in/web/sbi-in-the-news/auction-notices/arc-drt"
-    url = sys.argv[1] if len(sys.argv) > 1 and not sys.argv[1].startswith("--") else default_url
-    
+    # Parse URLs and limit
+    urls = []
     limit = None
-    if "--limit" in sys.argv:
-        try: limit = int(sys.argv[sys.argv.index("--limit") + 1])
-        except: limit = 5
+    
+    skip_next = False
+    for i, arg in enumerate(sys.argv[1:], 1):
+        if skip_next:
+            skip_next = False
+            continue
+        if arg == "--limit":
+            try:
+                limit = int(sys.argv[i + 1])
+                skip_next = True
+            except:
+                limit = 5
+        elif not arg.startswith("--"):
+            urls.append(arg)
 
-    print(f"\nTarget: {url}")
-    print(f"Keywords: {', '.join(RELEVANT_KEYWORDS)}")
+    # Default URL if none provided
+    if not urls:
+        urls = ["https://sbi.bank.in/web/sbi-in-the-news/auction-notices/arc-drt"]
+
+    print(f"\nKeywords: {', '.join(RELEVANT_KEYWORDS)}")
+    print(f"Processing {len(urls)} target(s)...")
     
-    notices = extract_notices_direct(url, limit=limit)
-    
-    if notices:
-        path = save_results(notices, url)
-        print(f"\n[OK] Extracted {len(notices)} notices.")
-        print(f"[OK] Saved to: {path}")
-    else:
-        print("\n[!] No notices found.")
+    for i, url in enumerate(urls, 1):
+        print(f"\n--- [{i}/{len(urls)}] Target: {url} ---")
+        try:
+            notices = extract_notices_direct(url, limit=limit)
+            
+            if notices:
+                path = save_results(notices, url)
+                total_accounts = sum(n.account_count for n in notices)
+                print(f"[OK] Extracted {len(notices)} notices (Total {total_accounts} accounts).")
+                print(f"[OK] Saved to: {path}")
+            else:
+                print("[!] No notices found for this URL.")
+        except Exception as e:
+            print(f"[ERROR] Failed to process {url}: {e}")
 
 if __name__ == "__main__":
     import urllib3

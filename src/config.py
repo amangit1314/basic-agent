@@ -14,9 +14,9 @@ logger = logging.getLogger("auction_extractor")
 
 # Extraction Keywords
 RELEVANT_KEYWORDS = [
-    'Stressed Loans', 'NPA', 'Showcause', 'Swiss Challenge', 
+    'Stressed Loan', 'NPA', 'Showcause', 'Swiss Challenge', 
     'Sale of Accounts', 'Sale of Financial Assets', 'Assignment of Debt',
-    'Sale of Stressed'
+    'Sale of Stressed', 'SARFAESI', 'Auction Notice', 'Web Notice'
 ]
 
 # Date extraction patterns

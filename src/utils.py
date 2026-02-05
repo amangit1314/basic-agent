@@ -1,5 +1,5 @@
 import re
-from typing import List
+from typing import List, Optional
 from .config import DATE_PATTERNS
 
 class ExtractionUtils:
@@ -53,3 +53,64 @@ class ExtractionUtils:
             if re.search(pattern, text, re.IGNORECASE):
                 return label
         return "Auction Notice"
+
+    @staticmethod
+    def extract_due_amount(text: str) -> Optional[str]:
+        # Exclude dates from being captured as amounts
+        def is_date(s: str) -> bool:
+            return bool(re.search(r'\d{1,2}[./-]\d{1,2}[./-]\d{2,4}', s))
+
+        # Specialized pattern for "(Total dues)" and amount like "177.28(924.96)"
+        table_pattern = r'Total\s*dues\s*\).*?([\d,.]{2,})\s*\(([\d,.]{2,})\)'
+        match = re.search(table_pattern, text, re.IGNORECASE | re.DOTALL)
+        if match:
+            val = match.group(2).strip()
+            if not is_date(val): return val
+
+        # Better patterns that look for amounts, prioritizing those with suffixes
+        patterns = [
+            r'(?:Outstanding|Total\s+Dues?|Total\s+Dues?\s+as\s+on)\s*[:|-]?\s*(?:[\s\w()#]*?)\s*(?:Rs\.?|INR)?\s*\(([\d,.]{2,}(?:\s*(?:crore|lakh|cr))?)\)', # Priority to parenthesized amounts like (924.96)
+            r'(?:Outstanding|Total\s+Dues?)\s*[:|-]?\s*[\s\w()]*?\s*(?:Rs\.?|INR)?\s*([\d,.]{2,}(?:\s*(?:crore|lakh|cr))?)',
+            r'Principal\s+O/s\s*[:|-]?\s*[\s\w()]*?\s*(?:Rs\.?|INR)?\s*([\d,.]{2,}(?:\s*(?:crore|lakh|cr))?)'
+        ]
+        for pattern in patterns:
+            for match in re.finditer(pattern, text, re.IGNORECASE | re.DOTALL):
+                val = match.group(1).strip()
+                if not is_date(val) and len(val) > 1:
+                    return val
+        return None
+
+    @staticmethod
+    def extract_reserve_price(text: str) -> Optional[str]:
+        segments = text.split('\n')
+        pattern = r'Reserve\s+Price\s*?[\s\w%]*?\s*[:|-]?\s*(?:Rs\.?|INR)?\s*([\d,.]{2,}(?:\s*(?:crore|lakh|cr))?)'
+        
+        candidates = []
+        for segment in segments:
+            # Exclude lines that describe mark-up or starting price or examples
+            lower_seg = segment.lower()
+            if "example" in lower_seg or "e.g." in lower_seg or "mark-up" in lower_seg or "starting" in lower_seg:
+                continue
+            
+            match = re.search(pattern, segment, re.IGNORECASE)
+            if match:
+                val = match.group(1).strip()
+                if val != '100' and len(val) > 1:
+                    candidates.append(val)
+        
+        if candidates:
+            # Prefer the one with 'Cr'
+            with_cr = [c for c in candidates if 'cr' in c.lower() or 'crore' in c.lower()]
+            if with_cr: return with_cr[0]
+            # If several, the first one that looked like a clean "Reserve Price: X" is usually best
+            return candidates[0]
+            
+        # Global fallback avoiding "example/mark-up" word in window
+        matches = re.finditer(pattern, text, re.IGNORECASE | re.DOTALL)
+        for match in matches:
+            window = text[max(0, match.start()-60):min(len(text), match.end()+60)].lower()
+            if "example" not in window and "e.g." not in window and "mark-up" not in window:
+                val = match.group(1).strip()
+                if val != '100': return val
+                
+        return None
