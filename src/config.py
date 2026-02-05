@@ -12,11 +12,16 @@ logging.basicConfig(
 )
 logger = logging.getLogger("auction_extractor")
 
-# Extraction Keywords
+# Extraction Keywords - Broad list for notice discovery
 RELEVANT_KEYWORDS = [
+    # Specific auction types
     'Stressed Loan', 'NPA', 'Showcause', 'Swiss Challenge', 
     'Sale of Accounts', 'Sale of Financial Assets', 'Assignment of Debt',
-    'Sale of Stressed', 'SARFAESI', 'Auction Notice', 'Web Notice'
+    'Sale of Stressed', 'SARFAESI', 'Auction Notice', 'Web Notice',
+    # Generic auction/sale terms
+    'e-auction', 'E Auction', 'DRT', 'ARC', 'Sale Notice',
+    'Asset Sale', 'Property Sale', 'Recovery', 'Possession Notice',
+    'Public Notice', 'Tender', 'Bid', 'Reserve Price'
 ]
 
 # Date extraction patterns

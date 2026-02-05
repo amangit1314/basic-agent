@@ -76,20 +76,31 @@ class ListingAnalyzerTool(BaseTool if CREWAI_AVAILABLE else object):
         """Find notice links that match keywords in their text, URL, or parent context."""
         relevant_links = {}
 
-        # Function to match flexible keywords (handles "Web+Notice", "Web_Notice", etc)
-        def matches_keyword(text: str) -> Optional[str]:
-            if not text: return None
+        def get_match_score(text: str, is_pdf: bool) -> int:
+            score = 0
+            if not text: return 0
             text_lower = text.lower()
+            
+            # Check for specific keywords
             for kw in RELEVANT_KEYWORDS:
                 kw_lower = kw.lower()
-                if kw_lower in text_lower: return kw
-                # Delimiter variants
+                if kw_lower in text_lower:
+                    score += 10
+                    # Higher score for strong keywords
+                    if kw_lower in ['npa', 'sale', 'auction', 'stressed']: score += 5
+                    break # Count one keyword match
+                
+                # Check variants
                 for d in ["+", "_", "-", ""]:
-                    variant = kw_lower.replace(" ", d)
-                    if variant and variant in text_lower: return kw
-            return None
+                    if kw.lower().replace(" ", d) in text_lower:
+                        score += 8
+                        break
+            
+            if is_pdf: score += 15
+            if "view" in text_lower or "download" in text_lower: score += 2
+            
+            return score
 
-        # Parse HTML with BeautifulSoup
         if not html_content or html_content.startswith("ERROR"):
             logger.error("ListingAnalyzer: Invalid HTML content")
             return json.dumps([])
@@ -105,32 +116,56 @@ class ListingAnalyzerTool(BaseTool if CREWAI_AVAILABLE else object):
                 full_url = urljoin(base_url, href)
                 link_text = a_tag.get_text(" ", strip=True)
                 
-                # Check keyword in: 1) link text, 2) URL, 3) parent element text
-                found_keyword = matches_keyword(link_text) or matches_keyword(href)
+                is_pdf = href.lower().endswith('.pdf') or "pdf" in href.lower()
                 
-                if not found_keyword and len(link_text) < 30:
+                # Calculate score based on text, URL, and parent text
+                score = get_match_score(link_text, is_pdf)
+                score += get_match_score(href, is_pdf) # Add URL match score
+                
+                # If low score but looks like a file/action, check parent
+                if score < 10 and (len(link_text) < 30 or is_pdf):
                     parent = a_tag.find_parent(['td', 'li', 'div', 'tr', 'p'])
                     if parent:
                         parent_text = parent.get_text(" ", strip=True)
-                        found_keyword = matches_keyword(parent_text)
-                
-                if found_keyword:
+                        parent_score = get_match_score(parent_text, False)
+                        if parent_score > 0: score += parent_score
+
+                # Threshold for relevance
+                if score >= 10:
+                    # Determine key matched (just for reporting)
+                    keyword_found = "High Score Match"
+                    for kw in RELEVANT_KEYWORDS:
+                        if kw.lower() in (link_text + href).lower():
+                            keyword_found = kw
+                            break
+                            
                     relevant_links[full_url] = {
                         "title": link_text[:100] if link_text else "Notice",
                         "url": full_url,
-                        "keyword_found": found_keyword
+                        "keyword_found": keyword_found,
+                        "score": score,
+                        "is_pdf": is_pdf
                     }
             
-            logger.info(f"ListingAnalyzer: {len(relevant_links)} links matched keywords")
+            # Sort by score/priority
+            sorted_links = sorted(relevant_links.values(), key=lambda x: x['score'], reverse=True)
+            logger.info(f"ListingAnalyzer: {len(sorted_links)} relevant links found")
             
-            if not relevant_links:
-                sample = [a['href'][:50] for a in all_links[:5]]
-                logger.info(f"ListingAnalyzer Sample: {sample}")
+            if not sorted_links:
+                 # Fallback: if minimal links found, look for *any* PDF on the page
+                 pdfs = [l for l in all_links if l['href'].lower().endswith('.pdf')]
+                 if pdfs:
+                     logger.info(f"ListingAnalyzer: Fallback found {len(pdfs)} PDFs")
+                     for p in pdfs[:5]:
+                         full = urljoin(base_url, p['href'])
+                         relevant_links[full] = {"title": "PDF Document", "url": full, "keyword_found": "PDF Fallback", "score": 5}
+                     sorted_links = list(relevant_links.values())
+
+            return json.dumps(sorted_links)
                 
         except Exception as e:
             logger.error(f"ListingAnalyzer Error: {e}")
-
-        return json.dumps(list(relevant_links.values()))
+            return json.dumps([])
 
 class FirecrawlExtractorTool(BaseTool if CREWAI_AVAILABLE else object):
     name: str = "firecrawl_extractor"
@@ -143,19 +178,19 @@ class FirecrawlExtractorTool(BaseTool if CREWAI_AVAILABLE else object):
         schema = {
             'type': 'object',
             'properties': {
-                'bank': {'type': 'string', 'description': 'Name of the bank or institution'},
-                'borrower_name': {'type': 'string', 'description': 'Name of the primary borrower or company'},
-                'reserve_price': {'type': 'string', 'description': 'The reserve price for the auction (e.g. 175.00 Cr)'},
-                'due_amount': {'type': 'string', 'description': 'Total dues or principal outstanding. Do not capture dates here.'},
-                'auction_date': {'type': 'string', 'description': 'Date of the e-auction'},
+                'bank': {'type': 'string', 'description': 'Name of the bank or institution issuing the notice.'},
+                'borrower_name': {'type': 'string', 'description': 'Name of the primary borrower or company.'},
+                'reserve_price': {'type': 'string', 'description': 'The reserve price amount (e.g. "17.50 Cr", "Rs. 1,00,000"). If multiple, take the highest value.'},
+                'due_amount': {'type': 'string', 'description': 'Total dues or principal outstanding amount. Exclude dates.'},
+                'auction_date': {'type': 'string', 'description': 'Date of the e-auction (e.g. "27.02.2026").'},
                 'accounts': {
                     'type': 'array',
                     'items': {
                         'type': 'object',
                         'properties': {
-                            'company': {'type': 'string'},
-                            'reserve': {'type': 'string'},
-                            'dues': {'type': 'string'}
+                            'company': {'type': 'string', 'description': 'Name of the company/borrower in this specific row/section.'},
+                            'reserve': {'type': 'string', 'description': 'Reserve price for this specific account.'},
+                            'dues': {'type': 'string', 'description': 'Dues amount for this specific account.'}
                         }
                     }
                 }
