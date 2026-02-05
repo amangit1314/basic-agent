@@ -2,7 +2,7 @@ import json
 import time
 from typing import List, Dict, Optional
 from .config import logger
-from .tools import WebScraperTool, ListingAnalyzerTool, ContentFetcherTool
+from .tools import WebScraperTool, ListingAnalyzerTool, ContentFetcherTool, FirecrawlExtractorTool
 from .utils import ExtractionUtils
 from .models import NoticeImportant, NoticeBundle, NestedDoc
 

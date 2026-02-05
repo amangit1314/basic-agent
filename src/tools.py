@@ -1,7 +1,7 @@
 import json
 import requests
 import io
-from typing import Type
+from typing import Type, Optional
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
 import os
@@ -69,70 +69,66 @@ class WebScraperTool(BaseTool if CREWAI_AVAILABLE else object):
 
 class ListingAnalyzerTool(BaseTool if CREWAI_AVAILABLE else object):
     name: str = "listing_analyzer"
-    description: str = "Scans HTML for links matching relevant keywords (uses Firecrawl map if available)."
+    description: str = "Scans HTML for links matching relevant keywords."
     args_schema: Type = ListingAnalyzerInput
     
     def _run(self, html_content: str, base_url: str) -> str:
-        relevant_links = {} # Use dict keyed by URL for uniqueness
+        """Find notice links that match keywords in their text, URL, or parent context."""
+        relevant_links = {}
 
-        # Function to match flexible keywords
+        # Function to match flexible keywords (handles "Web+Notice", "Web_Notice", etc)
         def matches_keyword(text: str) -> Optional[str]:
             if not text: return None
             text_lower = text.lower()
             for kw in RELEVANT_KEYWORDS:
                 kw_lower = kw.lower()
                 if kw_lower in text_lower: return kw
-                # Delimiter match (e.g. "Web Notice" matches "Web+Notice" or "Web_Notice")
-                kw_variants = [kw_lower.replace(" ", d) for d in ["+", "_", "-", ""]]
-                for variant in kw_variants:
+                # Delimiter variants
+                for d in ["+", "_", "-", ""]:
+                    variant = kw_lower.replace(" ", d)
                     if variant and variant in text_lower: return kw
             return None
 
-        # 1. Firecrawl Map (Good for thorough URL discovery)
-        app = get_firecrawl_app()
-        if app:
-            try:
-                logger.info(f"ListingAnalyzer: Mapping links for {base_url}")
-                map_result = app.map_url(base_url)
-                for link in map_result.get('links', []):
-                    found_keyword = matches_keyword(link)
-                    if found_keyword:
-                        relevant_links[link] = {"title": "Notice", "url": link, "keyword_found": found_keyword}
-            except Exception as e:
-                logger.error(f"Firecrawl Map Error: {e}")
-
-        # 2. BeautifulSoup Fallback/Complement (Essential for matching keywords in visible text)
-        if html_content and not html_content.startswith("ERROR"):
-            try:
-                logger.info(f"ListingAnalyzer: Analyzing HTML content ({len(html_content)} bytes)")
-                soup = BeautifulSoup(html_content, 'lxml')
-                all_a = soup.find_all('a', href=True)
-                logger.info(f"ListingAnalyzer: Found {len(all_a)} total links in HTML.")
+        # Parse HTML with BeautifulSoup
+        if not html_content or html_content.startswith("ERROR"):
+            logger.error("ListingAnalyzer: Invalid HTML content")
+            return json.dumps([])
+        
+        try:
+            logger.info(f"ListingAnalyzer: Parsing {len(html_content)} bytes of HTML")
+            soup = BeautifulSoup(html_content, 'lxml')
+            all_links = soup.find_all('a', href=True)
+            logger.info(f"ListingAnalyzer: Found {len(all_links)} total links")
+            
+            for a_tag in all_links:
+                href = a_tag['href']
+                full_url = urljoin(base_url, href)
+                link_text = a_tag.get_text(" ", strip=True)
                 
-                for a_tag in all_a:
-                    link_text = a_tag.get_text(" ", strip=True) # Space separator for nested spans
-                    full_url = urljoin(base_url, a_tag['href'])
-                    
-                    found_keyword = matches_keyword(link_text)
-                    
-                    # Match in parent/sibling text if link text is short (e.g. "View")
-                    if not found_keyword and len(link_text) < 25:
-                        parent = a_tag.find_parent(['td', 'li', 'div', 'tr'])
-                        if parent:
-                            parent_text = parent.get_text(" ", strip=True)
-                            found_keyword = matches_keyword(parent_text)
-                    
-                    if found_keyword:
-                        relevant_links[full_url] = {"title": link_text or "Notice", "url": full_url, "keyword_found": found_keyword}
-            except Exception as e:
-                logger.error(f"BS4 Analyzer Error: {e}")
-
-        if not relevant_links:
-            logger.warning("ListingAnalyzer: No relevant links discovered.")
-            # Debug: log first 10 links if any
-            if 'soup' in locals():
-                sample = [a['href'] for a in soup.find_all('a', href=True)[:10]]
-                logger.info(f"ListingAnalyzer Sample links: {sample}")
+                # Check keyword in: 1) link text, 2) URL, 3) parent element text
+                found_keyword = matches_keyword(link_text) or matches_keyword(href)
+                
+                if not found_keyword and len(link_text) < 30:
+                    parent = a_tag.find_parent(['td', 'li', 'div', 'tr', 'p'])
+                    if parent:
+                        parent_text = parent.get_text(" ", strip=True)
+                        found_keyword = matches_keyword(parent_text)
+                
+                if found_keyword:
+                    relevant_links[full_url] = {
+                        "title": link_text[:100] if link_text else "Notice",
+                        "url": full_url,
+                        "keyword_found": found_keyword
+                    }
+            
+            logger.info(f"ListingAnalyzer: {len(relevant_links)} links matched keywords")
+            
+            if not relevant_links:
+                sample = [a['href'][:50] for a in all_links[:5]]
+                logger.info(f"ListingAnalyzer Sample: {sample}")
+                
+        except Exception as e:
+            logger.error(f"ListingAnalyzer Error: {e}")
 
         return json.dumps(list(relevant_links.values()))
 
