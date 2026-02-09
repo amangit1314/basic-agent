@@ -28,7 +28,6 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Literal
-
 from pydantic import BaseModel, Field
 
 
@@ -64,7 +63,6 @@ from pydantic import BaseModel, Field
 #         ...,
 #         description="Why the agent chose this action — for debugging and transparency",
 #     )
-
 
 # class AgentState(BaseModel):
 #     """
@@ -116,7 +114,6 @@ from pydantic import BaseModel, Field
 
 #     model_config = {"arbitrary_types_allowed": True}
 
-
 # =============================================================================
 # Layer 2: Domain Data Models
 # =============================================================================
@@ -140,7 +137,6 @@ class DateInfo(BaseModel):
         description="The date value (e.g. '27.02.2026', '13-Mar-2026')",
     )
 
-
 class AmountInfo(BaseModel):
     """
     A single monetary amount extracted from a notice.
@@ -158,7 +154,6 @@ class AmountInfo(BaseModel):
         ...,
         description="The amount with currency (e.g. 'Rs. 17.50 Cr', 'INR 5,673.20 Crore')",
     )
-
 
 class NoticeData(BaseModel):
     """
@@ -211,7 +206,6 @@ class NoticeData(BaseModel):
     raw_text_snippet: str = Field(
         "", description="First 500 chars of raw text — for reference/debugging"
     )
-
 
 # =============================================================================
 # Layer 3: Output Model
