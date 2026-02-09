@@ -1,6 +1,18 @@
 {
+  "permissions": {
+    "allow": [
+      "Bash(del \"d:\\\\WORK\\\\pragyatara\\\\poc\\\\basic-agent\\\\src\\\\tools.py\")",
+      "Bash(del \"d:\\\\WORK\\\\pragyatara\\\\poc\\\\basic-agent\\\\src\\\\pipeline.py\")",
+      "Bash(del \"d:\\\\WORK\\\\pragyatara\\\\poc\\\\basic-agent\\\\src\\\\extractor.py\")",
+      "Bash(del \"d:\\\\WORK\\\\pragyatara\\\\poc\\\\basic-agent\\\\src\\\\browser_old.py\")",
+      "Bash(del \"d:\\\\WORK\\\\pragyatara\\\\poc\\\\basic-agent\\\\app.py\")",
+      "Bash(pip install:*)",
+      "Bash(test:*)",
+      "Bash(python main.py:*)"
+    ]
+  },
+  "enableAllProjectMcpServers": true,
   "enabledMcpjsonServers": [
     "claude-flow"
-  ],
-  "enableAllProjectMcpServers": true
+  ]
 }

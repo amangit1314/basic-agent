@@ -1,19 +1,25 @@
-# CrewAI Framework - for building autonomous AI agents
-crewai>=0.28.0
-crewai-tools>=0.1.0
+# ARC Notice Extraction Agent — Dependencies
+# ============================================
 
-# Environment Variables Management
-python-dotenv>=1.0.0
+# Pydantic — Type-safe data models (the "vocabulary" of the agent)
+pydantic>=2.0.0
 
-# Web Scraping Dependencies
+# Browser Automation — Playwright drives a real Chromium browser
 playwright>=1.40.0
-beautifulsoup4>=4.12.0
-requests>=2.31.0
-lxml>=5.0.0
-pypdf>=4.0.0
-firecrawl-py>=1.0.0
 
-# LLM Provider (choose one)
-# For OpenAI:
-openai>=1.0.0
-# For local LLMs via Ollama, no extra package needed - CrewAI supports it natively
+# HTML Parsing — BeautifulSoup extracts links and text from HTML
+beautifulsoup4>=4.12.0
+lxml>=5.0.0
+
+# HTTP Client — For downloading PDFs and simple requests
+requests>=2.31.0
+urllib3>=2.0.0
+
+# PDF Extraction — Read text from PDF documents
+pypdf>=4.0.0
+
+# AI Provider — Google Gemini for reasoning and data extraction
+google-generativeai>=0.8.0
+
+# Environment Variables — Load .env files securely
+python-dotenv>=1.0.0

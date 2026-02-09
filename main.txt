@@ -1,0 +1,157 @@
+"""
+CLI Entry Point — Run the ARC Notice Extraction Agent
+=======================================================
+
+LEARNING NOTE: Why argparse?
+------------------------------
+argparse is Python's built-in CLI argument parser. It:
+- Parses command-line arguments (--limit 5, --keywords "NPA,SARFAESI")
+- Generates --help text automatically
+- Validates argument types (int, str, etc.)
+
+Usage:
+    python main.py https://idbicapital.com
+    python main.py https://sbi.bank.in/web/sbi-in-the-news/auction-notices/arc-drt --limit 3
+    python main.py https://example.com --keywords "NPA,SARFAESI,Auction" --limit 5
+"""
+
+import argparse
+import asyncio
+import sys
+
+import urllib3
+
+from src.agent import NoticeExtractionAgent
+from src.config import MAX_AGENT_STEPS, logger
+
+
+def parse_args() -> argparse.Namespace:
+    """Parse command-line arguments."""
+    parser = argparse.ArgumentParser(
+        description="ARC Notice Extraction Agent — Autonomous notice scraper",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python main.py https://idbicapital.com
+  python main.py https://sbi.bank.in/notices --limit 3
+  python main.py https://example.com --keywords "NPA,SARFAESI" --limit 5
+        """,
+    )
+
+    parser.add_argument(
+        "url",
+        help="URL of the ARC/bank listing page to extract notices from",
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Maximum number of notices to extract (default: no limit)",
+    )
+    parser.add_argument(
+        "--keywords",
+        type=str,
+        default=None,
+        help='Comma-separated keywords to filter notices (default: built-in list)',
+    )
+    parser.add_argument(
+        "--max-steps",
+        type=int,
+        default=MAX_AGENT_STEPS,
+        help=f"Maximum agent steps before stopping (default: {MAX_AGENT_STEPS})",
+    )
+    parser.add_argument(
+        "--provider",
+        type=str,
+        default="gemini",
+        choices=["gemini", "openai", "claude"],
+        help="LLM provider for reasoning and extraction (default: gemini)",
+    )
+
+    return parser.parse_args()
+
+
+async def main():
+    """
+    Main async entry point.
+
+    LEARNING NOTE: The agent is async because Playwright (browser automation)
+    requires async/await. Python's asyncio.run() bridges the sync/async gap.
+    """
+    args = parse_args()
+
+    # Parse keywords if provided
+    keywords = None  # None = use defaults
+    if args.keywords:
+        keywords = [kw.strip() for kw in args.keywords.split(",") if kw.strip()]
+
+    # Print banner
+    print("\n" + "=" * 60)
+    print("  ARC Notice Extraction Agent (ReAct)")
+    print("=" * 60)
+    print(f"  Target:     {args.url}")
+    print(f"  Limit:      {args.limit or 'no limit'}")
+    print(f"  Keywords:   {'custom' if keywords else 'default'}")
+    print(f"  Max steps:  {args.max_steps}")
+    print(f"  Provider:   {args.provider}")
+    print("=" * 60 + "\n")
+
+    # Create and run the agent
+    agent = NoticeExtractionAgent(
+        url=args.url,
+        keywords=keywords,
+        max_steps=args.max_steps,
+        limit=args.limit,
+        provider=args.provider,
+    )
+
+    result = await agent.run()
+
+    # Print summary
+    print("\n" + "=" * 60)
+    print("  RESULTS")
+    print("=" * 60)
+    print(f"  Status:          {'Success' if result.total_notices_found > 0 else 'No notices found'}")
+    print(f"  Steps taken:     {result.agent_steps_taken}")
+    print(f"  Notices found:   {result.total_notices_found}")
+
+    if result.notices:
+        print("\n  Extracted Notices:")
+        print("  " + "-" * 56)
+        for i, notice in enumerate(result.notices, 1):
+            name = notice.company_name or notice.borrower_name or "Unknown"
+            bank = notice.bank or "Unknown bank"
+            ntype = notice.notice_type or "Unknown type"
+            dates_str = ", ".join(f"{d.label}: {d.value}" for d in notice.dates[:2])
+            amounts_str = ", ".join(f"{a.label}: {a.value}" for a in notice.amounts[:2])
+
+            print(f"\n  [{i}] {name}")
+            print(f"      Bank:    {bank}")
+            print(f"      Type:    {ntype}")
+            if dates_str:
+                print(f"      Dates:   {dates_str}")
+            if amounts_str:
+                print(f"      Amounts: {amounts_str}")
+            print(f"      Source:  {notice.source_url[:80]}")
+
+    # Save results
+    if result.notices:
+        filepath = agent.save_results(result)
+        print(f"\n  Saved to: {filepath}")
+    else:
+        print("\n  No notices to save.")
+
+    print("\n" + "=" * 60)
+
+    # Print agent log if verbose or few results
+    if result.agent_steps_taken > 0:
+        print("\n  Agent Decision Log:")
+        for entry in agent.state.log:
+            print(f"    {entry}")
+        print()
+
+
+if __name__ == "__main__":
+    # Suppress SSL warnings (many ARC sites have certificate issues)
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    asyncio.run(main())
