@@ -1,6 +1,6 @@
 import argparse
 import asyncio
-from src.agent import NoticeExtractionPipeline
+from src.pipeline import NoticeExtractionPipeline
 
 async def main():
     parser = argparse.ArgumentParser(description="ARC Notice Extractor")
